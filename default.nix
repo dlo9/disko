@@ -67,6 +67,15 @@ let
   config.table = q: x:
     foldl' recursiveUpdate { } (imap (index: config-f (q // { inherit index; })) x.partitions);
 
+  config.swap = q: x: {
+    swapDevices = {
+      device = q.device;
+      options = mountOptions;
+    };
+  };
+
+  # TODO
+  #config.swap = q: x:
 
   create-f = q: x: create.${x.type} q x;
 
@@ -165,12 +174,12 @@ let
   '';
 
   create.zfs_filesystem = q: x: ''
-    zfs create ${q.pool}/${x.name} \
+    zfs create -u ${q.pool}/${x.name} \
       ${lib.optionalString (isAttrs x.options or null) (concatStringsSep " " (mapAttrsToList (n: v: "-o ${n}=${v}") x.options))}
   '';
 
   create.zfs_volume = q: x: ''
-    zfs create ${q.pool}/${x.name} \
+    zfs create -u ${q.pool}/${x.name} \
       -V ${x.size} \
       ${lib.optionalString (isAttrs x.options or null) (concatStringsSep " " (mapAttrsToList (n: v: "-o ${n}=${v}") x.options))}
     udevadm trigger --subsystem-match=block; udevadm settle
@@ -186,6 +195,11 @@ let
     ${concatMapStrings (create-f (q // { pool = q.name; })) x.datasets}
   '';
 
+  create.swap = q: x: ''
+    mkswap \
+      ${lib.optionalString (!isNull x.extraArgs or null) x.extraArgs} \
+      ${q.device}
+  '';
 
   mount-f = q: x: mount.${x.type} q x;
 
@@ -199,12 +213,23 @@ let
     '';
   };
 
+  mount.swap = q: x: {
+    swap.${q.device} = ''
+      swapon \
+        ${lib.optionalString (isList x.mountOptions or null) (concatStringsSep " " x.mountOptions)} \
+        ${q.device}
+    '';
+  };
+
   mount.zfs_filesystem = q: x:
-    optionalAttrs ((x.options.mountpoint or "") != "none")
-      (mount.filesystem (q // { device = q.dataset; }) (x // { mountOptions = [
-        (lib.optionalString ((x.options.mountpoint or "") != "legacy") "-o zfsutil")
-        "-t zfs"
-      ]; }));
+    optionalAttrs ((x.options.canmount or "") != "off" && (x.mountpoint or "") != "none")
+      (mount.filesystem (q // { device = q.dataset; }) (x // {
+        mountOptions = [
+          #(lib.optionalString ((x.mountpoint or "") != "legacy" && (x.options.canmount or "") != "noauto") "-o zfsutil")
+          (lib.optionalString ((x.mountpoint or "") != "legacy") "-o zfsutil")
+          "-t zfs"
+        ];
+      }));
 
   mount.btrfs = mount.filesystem;
 
@@ -221,6 +246,7 @@ let
       ${optionalString (hasAttr "zpool" z) (concatStringsSep "\n" (attrValues z.zpool))}
       ${optionalString (hasAttr "zfs" z) (concatStringsSep "\n" (attrValues z.zfs))}
       ${optionalString (hasAttr "fs" z) (concatStringsSep "\n" (attrValues z.fs))}
+      ${optionalString (hasAttr "swap" z) (concatStringsSep "\n" (attrValues z.swap))}
     '';
 
   mount.luks = q: x: (
@@ -271,7 +297,7 @@ let
         inherit (q) name;
         type = "zfs_filesystem";
         dataset = q.name;
-        mountpoint = x.mountpoint or "/${q.name}";
+        mountpoint = q.mountpoint or "/${q.name}";
         options = q.rootFsOptions or { };
       }] ++ x.datasets;
     in
@@ -282,9 +308,11 @@ let
             (x: mount-f
               ({
                 dataset = x.dataset or "${q.name}/${x.name}";
-                mountpoint = x.mountpoint or "/${q.name}/${x.name}";
+                mountpoint = x.options.mountpoint or "/${q.name}/${x.name}";
               } // q)
-              x)
+              ({
+                mountpoint = x.options.mountpoint;
+              } // x))
             datasets)
         )
       )
