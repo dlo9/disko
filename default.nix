@@ -179,7 +179,7 @@ let
   '';
 
   create.zfs_volume = q: x: ''
-    zfs create -u ${q.pool}/${x.name} \
+    zfs create ${q.pool}/${x.name} \
       -V ${x.size} \
       ${lib.optionalString (isAttrs x.options or null) (concatStringsSep " " (mapAttrsToList (n: v: "-o ${n}=${v}") x.options))}
     udevadm trigger --subsystem-match=block; udevadm settle
